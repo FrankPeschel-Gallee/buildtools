@@ -7,6 +7,7 @@ using Microsoft.Build.Utilities;
 using NuGet;
 using NuGet.Frameworks;
 using NuGet.Packaging.Core;
+using NuGet.Packaging;
 using NuGet.Versioning;
 using System;
 using System.Collections.Generic;
@@ -63,6 +64,8 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         public bool RequireLicenseAcceptance { get; set; }
 
         public bool DevelopmentDependency { get; set; }
+
+        public bool Serviceable { get; set; }
 
         public string Tags { get; set; }
 
@@ -136,7 +139,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             {
                 using (var stream = File.OpenRead(InputFileName))
                 {
-                    manifest = Manifest.ReadFrom(stream);
+                    manifest = Manifest.ReadFrom(stream, false);
                 }
                 if (manifest.Metadata == null)
                 {
@@ -153,24 +156,34 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
             manifestMetadata.UpdateMember(x => x.Authors, Authors?.Split(';'));
             manifestMetadata.UpdateMember(x => x.Copyright, Copyright);
-            manifestMetadata.UpdateMember(x => x.DependencySets, GetDependencySets());
+            manifestMetadata.UpdateMember(x => x.DependencyGroups, GetDependencySets());
             manifestMetadata.UpdateMember(x => x.Description, Description);
             manifestMetadata.DevelopmentDependency |= DevelopmentDependency;
-            manifestMetadata.UpdateMember(x => x.FrameworkAssemblies, GetFrameworkAssemblies());
-            manifestMetadata.UpdateMember(x => x.IconUrl, IconUrl != null ? new Uri(IconUrl) : null);
+            manifestMetadata.UpdateMember(x => x.FrameworkReferences, GetFrameworkAssemblies());
+            if (IconUrl != null)
+            {
+                manifestMetadata.SetIconUrl(IconUrl);
+            }
             manifestMetadata.UpdateMember(x => x.Id, Id);
             manifestMetadata.UpdateMember(x => x.Language, Language);
-            manifestMetadata.UpdateMember(x => x.LicenseUrl, new Uri(LicenseUrl));
+            if (LicenseUrl != null)
+            {
+                manifestMetadata.SetLicenseUrl(LicenseUrl);
+            }
             manifestMetadata.UpdateMember(x => x.MinClientVersionString, MinClientVersion);
             manifestMetadata.UpdateMember(x => x.Owners, Owners?.Split(';'));
-            manifestMetadata.UpdateMember(x => x.ProjectUrl, ProjectUrl != null ? new Uri(ProjectUrl) : null);
-            manifestMetadata.AddRangeToMember(x => x.PackageAssemblyReferences, GetReferenceSets());
+            if (ProjectUrl != null)
+            {
+                manifestMetadata.SetProjectUrl(ProjectUrl);
+            }
+            manifestMetadata.UpdateMember(x => x.PackageAssemblyReferences, GetReferenceSets());
             manifestMetadata.UpdateMember(x => x.ReleaseNotes, ReleaseNotes);
             manifestMetadata.RequireLicenseAcceptance |= RequireLicenseAcceptance;
             manifestMetadata.UpdateMember(x => x.Summary, Summary);
             manifestMetadata.UpdateMember(x => x.Tags, Tags);
             manifestMetadata.UpdateMember(x => x.Title, Title);
             manifestMetadata.UpdateMember(x => x.Version, Version != null ? new NuGetVersion(Version) : null);
+            manifestMetadata.Serviceable |= Serviceable;
 
             manifest.AddRangeToMember(x => x.Files, GetManifestFiles());
 
@@ -180,34 +193,57 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         private List<ManifestFile> GetManifestFiles()
         {
             return (from f in Files.NullAsEmpty()
-                    select new ManifestFile(
-                        f.GetMetadata(Metadata.FileSource),
-                        f.GetMetadata(Metadata.FileTarget),
-                        f.GetMetadata(Metadata.FileExclude)
-                        )).OrderBy(f => f.Target, StringComparer.OrdinalIgnoreCase).ToList();
+                    where !f.GetMetadata(Metadata.FileTarget).StartsWith("$none$", StringComparison.OrdinalIgnoreCase)
+                    select new ManifestFile()
+                    {
+                        Source = f.GetMetadata(Metadata.FileSource),
+                        Target = f.GetMetadata(Metadata.FileTarget),
+                        Exclude = f.GetMetadata(Metadata.FileExclude)
+                    }).OrderBy(f => f.Target, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
+
+        static FrameworkAssemblyReferenceComparer frameworkAssemblyReferenceComparer = new FrameworkAssemblyReferenceComparer();
         private List<FrameworkAssemblyReference> GetFrameworkAssemblies()
         {
             return (from fr in FrameworkReferences.NullAsEmpty()
                     orderby fr.ItemSpec, StringComparer.Ordinal
                     select new FrameworkAssemblyReference(fr.ItemSpec, new[] { fr.GetTargetFramework() })
-                    ).ToList();
+                    ).Distinct(frameworkAssemblyReferenceComparer).ToList();
         }
 
-        private List<PackageDependencySet> GetDependencySets()
+        private class FrameworkAssemblyReferenceComparer : EqualityComparer<FrameworkAssemblyReference>
+        {
+            public override bool Equals(FrameworkAssemblyReference x, FrameworkAssemblyReference y)
+            {
+                return Object.Equals(x, y) ||
+                    (   x != null && y != null &&
+                        x.AssemblyName.Equals(y.AssemblyName) &&
+                        x.SupportedFrameworks.SequenceEqual(y.SupportedFrameworks, NuGetFramework.Comparer)
+                    );
+            }
+
+            public override int GetHashCode(FrameworkAssemblyReference obj)
+            {
+                return obj.AssemblyName.GetHashCode();
+            }
+        }
+
+        private List<PackageDependencyGroup> GetDependencySets()
         {
             var dependencies = from d in Dependencies.NullAsEmpty()
                                select new Dependency
                                {
                                    Id = d.ItemSpec,
                                    Version = d.GetVersion(),
-                                   TargetFramework = d.GetTargetFramework()
+                                   TargetFramework = d.GetTargetFramework() ?? NuGetFramework.AnyFramework,
+                                   Include = d.GetValueList("Include"),
+                                   Exclude = d.GetValueList("Exclude")
                                };
 
             return (from dependency in dependencies
                     group dependency by dependency.TargetFramework into dependenciesByFramework
-                    select new PackageDependencySet(
+                    select new PackageDependencyGroup(
                         dependenciesByFramework.Key,
                         from dependency in dependenciesByFramework
                                         where dependency.Id != "_._"
@@ -218,12 +254,16 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
                                             VersionRange.Parse(
                                                 dependenciesById.Select(x => x.Version)
                                                 .Aggregate(AggregateVersions)
-                                                .ToStringSafe())
+                                                .ToStringSafe()),
+                                            dependenciesById.Select(x => x.Include).Aggregate(AggregateInclude),
+                                            dependenciesById.Select(x => x.Exclude).Aggregate(AggregateExclude)
+
+
                     ))).OrderBy(s => s?.TargetFramework?.GetShortFolderName(), StringComparer.Ordinal)
                     .ToList();
         }
 
-        private ICollection<PackageReferenceSet> GetReferenceSets()
+        private IEnumerable<PackageReferenceSet> GetReferenceSets()
         {
             var references = from r in References.NullAsEmpty()
                              select new
@@ -259,6 +299,33 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             return versionRange;
         }
 
+        private static IReadOnlyList<string> AggregateInclude(IReadOnlyList<string> aggregate, IReadOnlyList<string> next)
+        {
+            // include is a union
+            if (aggregate == null)
+            {
+                return next;
+            }
+
+            if (next == null)
+            {
+                return aggregate;
+            }
+
+            return aggregate.Union(next).ToArray();
+        }
+
+        private static IReadOnlyList<string> AggregateExclude(IReadOnlyList<string> aggregate, IReadOnlyList<string> next)
+        {
+            // exclude is an intersection
+            if (aggregate == null || next == null)
+            {
+                return null;
+            }
+
+            return aggregate.Intersect(next).ToArray();
+        }
+
         private static void SetMinVersion(ref VersionRange target, VersionRange source)
         {
             if (source == null || source.MinVersion == null)
@@ -292,7 +359,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
             if (update)
             {
-                target = new VersionRange(minVersion, includeMinVersion, target.MaxVersion, target.IsMaxInclusive, target.IncludePrerelease, target.Float, target.OriginalString);
+                target = new VersionRange(minVersion, includeMinVersion, target.MaxVersion, target.IsMaxInclusive, target.Float, target.OriginalString);
             }
         }
 
@@ -329,7 +396,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
             if (update)
             {
-                target = new VersionRange(target.MinVersion, target.IsMinInclusive, maxVersion, includeMaxVersion, target.IncludePrerelease, target.Float, target.OriginalString);
+                target = new VersionRange(target.MinVersion, target.IsMinInclusive, maxVersion, includeMaxVersion, target.Float, target.OriginalString);
             }
         }
 
@@ -340,6 +407,10 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             public NuGetFramework TargetFramework { get; set; }
 
             public VersionRange Version { get; set; }
+
+            public IReadOnlyList<string> Exclude { get; set; }
+
+            public IReadOnlyList<string> Include { get; set; }
         }
     }
 }

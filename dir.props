@@ -14,15 +14,6 @@
     <RoslynPackageName>Microsoft.Net.ToolsetCompilers</RoslynPackageName>
   </PropertyGroup>
 
-  <ItemGroup>
-    <AssemblyMetadata Include=".NETFrameworkAssembly">
-      <Value></Value>
-    </AssemblyMetadata>
-    <AssemblyMetadata Include="Serviceable">
-      <Value>True</Value>
-    </AssemblyMetadata>
-  </ItemGroup>
-
   <!--
     Switching to the .NET Core version of the BuildTools tasks seems to break numerous scenarios, such as VS intellisense and resource designer
     as well as runnning the build on mono. Until we can get these sorted out we will continue using the .NET 4.5 version of the tasks.
@@ -39,6 +30,7 @@
     <!-- Output directories -->
     <BinDir Condition="'$(BinDir)'==''">$(ProjectDir)bin/</BinDir>
     <ObjDir Condition="'$(ObjDir)'==''">$(BinDir)obj/</ObjDir>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)'==''">$(ObjDir)</BaseIntermediateOutputPath>
     <TestWorkingDir Condition="'$(TestWorkingDir)'==''">$(BinDir)tests/</TestWorkingDir>
     <PackagesOutDir Condition="'$(PackagesOutDir)'==''">$(BinDir)packages/</PackagesOutDir>
 
@@ -47,8 +39,14 @@
     <ToolsDir Condition="'$(ToolsDir)'==''">$(ProjectDir)Tools/</ToolsDir>
     <BuildToolsTaskDir Condition="'$(BuildToolsTargets45)' == 'true'">$(ToolsDir)net45/</BuildToolsTaskDir>
     <PackagingTaskDir>$(ToolsDir)net45/</PackagingTaskDir>
-    <DotnetCliPath Condition="'$(DotnetCliPath)'==''">$(ToolsDir)dotnetcli/bin/</DotnetCliPath>
+    <DotnetCliPath Condition="'$(DotnetCliPath)'==''">$(ToolsDir)dotnetcli/</DotnetCliPath>
   </PropertyGroup>
+
+  <!-- Setting up Versioning -->
+  <PropertyGroup>
+    <VersionComparisonDate>2016-01-01</VersionComparisonDate>
+  </PropertyGroup>
+  <Import Project="$(ToolsDir)BuildVersion.targets" />
 
   <!-- Import Build tools common props file where repo-independent properties are found -->
   <Import Project="$(ToolsDir)Build.Common.props" />
@@ -59,30 +57,17 @@
     <TestRuntimeProjectLockJson Condition="'$(TestRuntimeProjectLockJson)' == ''">$(SourceDir)Microsoft.DotNet.Build.Tasks/PackageFiles/test-runtime/project.lock.json</TestRuntimeProjectLockJson>
   </PropertyGroup>
 
-  <!-- Package dependency validation -->
-  <PropertyGroup>
-    <ValidatePackageVersions>true</ValidatePackageVersions>
-    <ProhibitFloatingDependencies>true</ProhibitFloatingDependencies>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <ValidationPattern Include="^((System\..%2A)|(Microsoft\.CSharp)|(Microsoft\.NETCore.%2A)|(Microsoft\.Win32\..%2A)|(Microsoft\.VisualBasic))(?&lt;!TestData)$">
-      <ExpectedPrerelease>rc2-23816</ExpectedPrerelease>
-    </ValidationPattern>
-    <ValidationPattern Include="^xunit$">
-      <ExpectedVersion>2.1.0</ExpectedVersion>
-    </ValidationPattern>
-  </ItemGroup>
+  <Import Project="$(ProjectDir)dependencies.props" />
 
   <!-- list of nuget package sources passed to nuget.exe -->
   <ItemGroup>
-    <NuGetSourceList Include="https:%2F%2Fwww.myget.org/F/dotnet-buildtools" />
+    <NuGetSourceList Include="https:%2F%2Fdotnet.myget.org/F/dotnet-buildtools" />
     <NuGetSourceList Include="https:%2F%2Fwww.nuget.org/api/v2" />
   </ItemGroup>
 
   <!-- Common nuget properties -->
   <PropertyGroup>
-    <NuGetToolPath Condition="'$(NuGetToolPath)'==''">$(PackagesDir)NuGet.exe</NuGetToolPath>
+    <NuGetToolPath Condition="'$(NuGetToolPath)'==''">$(ToolsDir)NuGet.CommandLine/NuGet.exe</NuGetToolPath>
     <NuGetPackageSource>@(NuGetSourceList -> '-source %(Identity)', ' ')</NuGetPackageSource>
     <NuGetConfigCommandLine>$(NuGetPackageSource)</NuGetConfigCommandLine>
 
@@ -98,18 +83,15 @@
   <!-- list of nuget package sources passed to dnu -->
   <ItemGroup>
     <!-- Need to escape double forward slash (%2F) or MSBuild will normalize to one slash on Unix. -->
-    <DnuSourceList Include="https:%2F%2Fwww.myget.org/F/dotnet-core/" />
-    <DnuSourceList Include="https:%2F%2Fwww.myget.org/F/dotnet-corefxtestdata/" />
-    <DnuSourceList Include="https:%2F%2Fwww.myget.org/F/dotnet-buildtools/" />
-    <DnuSourceList Include="https:%2F%2Fwww.myget.org/F/nugetbuild/" />
-    <DnuSourceList Include="https:%2F%2Fwww.nuget.org/api/v2/" />
+    <DnuSourceList Include="https:%2F%2Fdotnet.myget.org/F/dotnet-core/api/v3/index.json" />
+    <DnuSourceList Include="https:%2F%2Fdotnet.myget.org/F/dotnet-buildtools/api/v3/index.json" />
+    <DnuSourceList Include="https:%2F%2Fwww.myget.org/F/nugetbuild/api/v3/index.json" />
+    <DnuSourceList Include="https:%2F%2Fapi.nuget.org/v3/index.json" />
   </ItemGroup>
 
-    <!-- list of directories to perform batch restore -->
+  <!-- list of directories to perform batch restore -->
   <ItemGroup>
     <DnuRestoreDir Include="$(MSBuildProjectDirectory)\src" />
-    <DnuRestoreDir Include="$(ToolsDir)" />
-    <DnuRestoreDir Include="$(MSBuildProjectDirectory)\src\**\*runtime\project.json" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -151,10 +133,10 @@
     <DebugSymbols>false</DebugSymbols>
     <DebugType>none</DebugType>
     <!--
-      Delay signing with the ECMA key currently doesn't work.
-      https://github.com/dotnet/roslyn/issues/2444
+      Full signing with Open key doesn't work with Portable Csc.
+      https://github.com/dotnet/roslyn/issues/8210
     -->
-    <UseECMAKey>false</UseECMAKey>
+    <UseOpenKey>false</UseOpenKey>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(OsEnvironment)'=='Unix'">
@@ -169,6 +151,11 @@
       Second, we aren't yet building pdbs, which the nuspecs specify.
     -->
     <SkipBuildPackages>true</SkipBuildPackages>
+  </PropertyGroup>
+
+  <!-- Set the default strong name sig to use the "open" key -->
+  <PropertyGroup Condition="'$(UseOpenKey)' == ''">
+    <UseOpenKey>true</UseOpenKey>
   </PropertyGroup>
 
   <!-- 
@@ -195,6 +182,7 @@
     <OSGroup Condition="'$(OSGroup)'=='' and $(Configuration.StartsWith('Linux'))">Linux</OSGroup>
     <OSGroup Condition="'$(OSGroup)'=='' and $(Configuration.StartsWith('OSX'))">OSX</OSGroup>
     <OSGroup Condition="'$(OSGroup)'=='' and $(Configuration.StartsWith('FreeBSD'))">FreeBSD</OSGroup>
+    <OSGroup Condition="'$(OSGroup)'=='' and $(Configuration.StartsWith('NetBSD'))">NetBSD</OSGroup>
     <OSGroup Condition="'$(OSGroup)'==''">AnyOS</OSGroup>
   </PropertyGroup>
 
@@ -210,6 +198,11 @@
     <Optimize Condition="'$(Optimize)' == ''">true</Optimize>
     <DebugType Condition="'$(DebugType)' == ''">pdbonly</DebugType>
     <DefineConstants>$(DefineConstants),TRACE</DefineConstants>
+  </PropertyGroup>
+  
+  <!-- Default Test platform to deploy the netstandard compiled tests to -->
+  <PropertyGroup>
+    <TestTFM Condition="'$(TestTFM)'==''">netcoreapp1.0</TestTFM>
   </PropertyGroup>
 
   <!-- Disable some standard properties for building our projects -->
@@ -238,7 +231,6 @@
     <BaseOutputPath Condition="'$(BaseOutputPath)'==''">$(BinDir)</BaseOutputPath>
     <OutputPath Condition="'$(OutputPath)'==''">$(BaseOutputPath)$(OSPlatformConfig)\$(MSBuildProjectName)\</OutputPath>
 
-    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)'==''">$(ObjDir)</BaseIntermediateOutputPath>
     <IntermediateOutputRootPath Condition="'$(IntermediateOutputRootPath)' == ''">$(BaseIntermediateOutputPath)$(OSPlatformConfig)\</IntermediateOutputRootPath>
     <IntermediateOutputPath Condition="'$(IntermediateOutputPath)' == ''">$(IntermediateOutputRootPath)$(MSBuildProjectName)\</IntermediateOutputPath>
 
@@ -253,8 +245,9 @@
     <TargetsLinux Condition="'$(OSGroup)' == 'Linux'">true</TargetsLinux>
     <TargetsOSX Condition="'$(OSGroup)' == 'OSX'">true</TargetsOSX>
     <TargetsFreeBSD Condition="'$(OSGroup)' == 'FreeBSD'">true</TargetsFreeBSD>
+    <TargetsNetBSD Condition="'$(OSGroup)' == 'NetBSD'">true</TargetsNetBSD>
 
-    <TargetsUnix Condition="'$(TargetsLinux)' == 'true' or '$(TargetsOSX)' == 'true' or '$(TargetsFreeBSD)' == 'true'">true</TargetsUnix>
+    <TargetsUnix Condition="'$(TargetsLinux)' == 'true' or '$(TargetsOSX)' == 'true' or '$(TargetsFreeBSD)' == 'true' or '$(TargetsNetBSD)' == 'true'">true</TargetsUnix>
   </PropertyGroup>
 
   <Import Project="$(RoslynPropsFile)"

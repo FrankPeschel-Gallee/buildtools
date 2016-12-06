@@ -5,8 +5,6 @@
     <BuildToolsTaskDir Condition="'$(BuildToolsTaskDir)' == ''">$(ToolsDir)</BuildToolsTaskDir>
   
     <!-- A number of the imports below depend on these default properties -->
-    <IsTestProject Condition="'$(IsTestProject)'=='' And $(MSBuildProjectName.EndsWith('.Tests'))">true</IsTestProject>
-
     <AssemblyVersion Condition="'$(AssemblyVersion)'==''">999.999.999.999</AssemblyVersion>
     <CLSCompliant Condition="'$(CLSCompliant)'=='' and '$(IsTestProject)'=='true'">false</CLSCompliant>
     <CLSCompliant Condition="'$(CLSCompliant)'==''">true</CLSCompliant>
@@ -18,6 +16,24 @@
     <ExcludeLocalizationImport Condition="'$(ExcludeLocalizationImport)'=='' And !Exists('$(MSBuildProjectDirectory)/MultilingualResources/$(MSBuildProjectName).de.xlf')">true</ExcludeLocalizationImport>
   </PropertyGroup>
 
+  <!-- used by test projects that need to copy supplemental content to the output directory -->
+  <ItemDefinitionGroup Condition="'$(IsTestProject)'=='true'">
+    <SupplementalTestData>
+      <DestinationDir />
+    </SupplementalTestData>
+  </ItemDefinitionGroup>
+
+  <!-- Assembly metadata indicating that an assembly is a framework (as opposed to user) assembly:
+       Test projects need to not have this because of the way "IsFrameworkAssembly" APIs work to check this. -->
+  <ItemGroup Condition="'$(IsDotNetFrameworkProductAssembly)' == 'true' AND '$(IsTestProject)' != 'true'" >
+    <AssemblyMetadata Include=".NETFrameworkAssembly">
+      <Value></Value>
+    </AssemblyMetadata>
+    <AssemblyMetadata Include="Serviceable">
+      <Value>True</Value>
+    </AssemblyMetadata>
+  </ItemGroup>
+
   <!--
     Import the provides support for EnsureBuildToolsRuntime target which will restore a .NET Core based 
     runtime and setup a $(ToolRuntimePath) and $(ToolHost) for others to consume.
@@ -25,7 +41,7 @@
     This must be imported before any tools that need to use it are imported.
   -->
   <Import Project="$(MSBuildThisFileDirectory)toolruntime.targets" Condition="'$(ExcludeToolRuntimeImport)' != 'true'"/>
-  
+
   <!--
     Import the reference assembly targets
     
@@ -34,14 +50,24 @@
     
       Depends on Properties:
         AssemblyVersion - Needed to determine API version used in
+        IsReferenceAssembly - Set if the project is in the ref assm path
     
       Sets Properties:
-        IsReferenceAssembly - Set if the project is in the ref assm path
         APIVersion - Major.Minor assembly version for the project
   -->
   <Import Project="$(MSBuildThisFileDirectory)ReferenceAssemblies.targets" Condition="'$(ExcludeReferenceAssembliesImport)'!='true'" />
-  
-  <Import Project="$(MSBuildThisFileDirectory)Packaging.targets" Condition="'$(ExcludePackagingImport)'!='true' AND '$(MSBuildProjectExtension)' == '.pkgproj'" />
+
+  <!-- 
+    Import the codeAnalysis.targets file to enable analyzer support during build. 
+    This should happen before we import the frameworkTargeting.targets because that import leads to computing a default
+    for the CodeAnalysisRuleset unless one is already specified
+  --> 
+  <Import Project="$(MSBuildThisFileDirectory)codeAnalysis.targets" />
+
+  <!-- 
+    Import the codeOptimization.targets file to enable profile guided code optimization for managed assemblies.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)codeOptimization.targets" />
 
   <!-- 
     Import the default target framework targets.
@@ -55,33 +81,6 @@
   -->
   <Import Project="$(MSBuildThisFileDirectory)FrameworkTargeting.targets" Condition="'$(ExcludeFrameworkTargetingImport)'!='true'" />
   
-  <!-- 
-    Import the default package restore and resolve targets 
-  
-      Inputs:
-        ProjectJson - If not set defaults to $(MSBuildProjectDirectory)\project.json
-        RestorePackages - If not set defaults to the existence of the $(ProjectJson)
-        ResolveNuGetPackages - If not set defaults to the existance of $(ProjectJson)
-      
-      Depends on properties:
-        NugetRestoreCommand - Used to restore the project packages from packages.config
-        DnuRestoreCommand - Used to restore the project packages from project.json
-        PackagesDir - Packages are restored to and resolved from this location
-
-      Depends on properties set by csharp/visualbasic.targets so needs to be imported after.
-  -->
-  <Import Project="$(MSBuildThisFileDirectory)packageresolve.targets" Condition="'$(ExcludePackageResolveImport)'!='true'" />
-
-  <!-- 
-    Import the default SR resource generation targets 
-  
-      Inputs:
-        ResourcesSourceOutputDirectory - If not set defaults to $(MSBuildProjectDirectory)\Resources.
-        StringResourcesPath - If not set defaults to $(ResourcesSourceOutputDirectory\Strings.resx if it exists. If the file exists
-          then the targets generates the strongly typed $(ResourcesSourceOutputDirectory)\SR.cs/vb file based on resource strings.  
-  -->
-  <Import Project="$(MSBuildThisFileDirectory)resources.targets" Condition="'$(ExcludeResourcesImport)'!='true'" />
-
   <!-- 
     Import the default assembly info generation targets
     
@@ -101,22 +100,97 @@
   -->
   <Import Project="$(MSBuildThisFileDirectory)versioning.targets" Condition="'$(ExcludeVersioningImport)'!='true'" />
 
+  <Import Project="$(MSBuildThisFileDirectory)Packaging.targets" Condition="'$(ExcludePackagingImport)'!='true' AND '$(MSBuildProjectExtension)' == '.pkgproj'" />
+  
+  <!-- Task to detect the TestNugetRuntimeId of a platform. This target is here to allow both the test build and sync steps to use
+       the same property for asset selection.
+  -->
+  <UsingTask TaskName="GetTargetMachineInfo" AssemblyFile="$(BuildToolsTaskDir)Microsoft.DotNet.Build.Tasks.dll"/>
+  <Target Name="GetDefaultTestRid">
+    <GetTargetMachineInfo>
+      <Output TaskParameter="RuntimeIdentifier" PropertyName="DefaultTestNugetRuntimeId" />
+    </GetTargetMachineInfo>
+    <!-- On Windows, we always use win7-x64 as the default test RID because the build context,
+         usually 32-bit full-framework MSBuild, is not a good default test context. -->
+    <PropertyGroup>
+      <DefaultTestNugetRuntimeId Condition="$(DefaultTestNugetRuntimeId.StartsWith('win'))">win7-x64</DefaultTestNugetRuntimeId>
+      <TestArchitecture Condition="'$(TestArchitecture)' == ''">x64</TestArchitecture>
+      <TestNugetRuntimeId Condition="'$(TestNugetRuntimeId)' == '' And '$(TestArchitecture)'=='x86'">win7-x86</TestNugetRuntimeId>
+      <TestNugetRuntimeId Condition="'$(TestNugetRuntimeId)' == ''">$(DefaultTestNugetRuntimeId)</TestNugetRuntimeId>
+    </PropertyGroup>
+  </Target>
+
+  <PropertyGroup>
+    <ResolvePkgProjReferencesDependsOn>GetDefaultTestRid;$(ResolvePkgProjReferencesDependsOn)</ResolvePkgProjReferencesDependsOn>
+  </PropertyGroup>
+  
+  <!-- Property which signals whether to import buildagainstpackages.targets.  This target contains 
+       the targets necessary to build tests with project references converted to package dependencies.
+  -->
+  <PropertyGroup>
+    <_BuildAgainstPackages Condition="'$(KeepAllProjectReferences)' != 'true' and '$(IsTestProject)' == 'true' and '$(MSBuildProjectExtension)' != '.builds' and '$(SkipBuildAgainstPackages)'!='true'">$(BuildTestsAgainstPackages)</_BuildAgainstPackages>
+  </PropertyGroup>
+  <!-- 
+    Import the default package restore and resolve targets 
+  
+      Inputs:
+        ProjectJson - If not set defaults to $(MSBuildProjectDirectory)\project.json
+        RestorePackages - If not set defaults to the existence of the $(ProjectJson)
+        ResolveNuGetPackages - If not set defaults to the existance of $(ProjectJson)
+      
+      Depends on properties:
+        NugetRestoreCommand - Used to restore the project packages from packages.config
+        DnuRestoreCommand - Used to restore the project packages from project.json
+        PackagesDir - Packages are restored to and resolved from this location
+
+      Depends on properties set by csharp/visualbasic.targets so needs to be imported after.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)packageresolve.targets" Condition="'$(ExcludePackageResolveImport)'!='true'" />
+
+  <!-- 
+    Import the partial facade generation targets
+    
+      Inputs:
+        GeneratePlatformNotSupportedAssembly - Determines wether to generate not-supported API for this assembly
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)notsupported.targets" Condition="'$(ExcludePartialFacadesImport)' != 'true'"/>
+
+  <!-- 
+    Import the default SR resource generation targets 
+  
+      Inputs:
+        ResourcesSourceOutputDirectory - If not set defaults to $(MSBuildProjectDirectory)\Resources.
+        StringResourcesPath - If not set defaults to $(ResourcesSourceOutputDirectory\Strings.resx if it exists. If the file exists
+          then the targets generates the strongly typed $(ResourcesSourceOutputDirectory)\SR.cs/vb file based on resource strings.  
+        OmitResources - If set to true will skip resource inclusion even if StringResourcesPath exists.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)resources.targets" Condition="'$(ExcludeResourcesImport)'!='true'" />
+
   <!--
     Import the localization target
   -->
   <Import Project="$(MSBuildThisFileDirectory)localization.targets" Condition="'$(ExcludeLocalizationImport)'!='true'" />
-
+  
   <!-- 
     Import the partial facade generation targets
     
       Inputs:
         IsPartialFacadeAssembly - Determines whether the partial facade generation targets will be as a post-processing step on the
           assembly. Also invokes special logic for determining References.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)partialfacades.targets" Condition="'$(ExcludePartialFacadesImport)' != 'true'"/>
+  
+   <!-- Import the ApiCompat targets. -->
+  <Import Project="$(MSBuildThisFileDirectory)ApiCompat.targets" />
+  
+  <!-- 
+    Import the contract resolution targets
+    
+      Inputs:
         AssemblyName - Needed to determine which contract name to map to
         AssemblyVersion - Needed to determine which contract version to map to
   -->
-  <Import Project="$(MSBuildThisFileDirectory)partialfacades.targets" Condition="'$(ExcludePartialFacadesImport)' != 'true'"/>
-
+  <Import Project="$(MSBuildThisFileDirectory)resolveContract.targets" Condition="'$(ExcludeResolveContractImport)' != 'true'"/>
   <!-- 
     Import the default signing targets which will setup the authenticode properties and do OpenSourceSigning
     
@@ -141,7 +215,7 @@
         DnuRestoreCommand - Used to restore the project packages from project.json
         PackagesDir - Packages are restored to and resolved from this location    
    -->
-  <Import Project="$(MSBuildThisFileDirectory)tests.targets" Condition="'$(IsTestProject)'=='true' and '$(ExcldueTestsImport)'!='true'"/>
+  <Import Project="$(MSBuildThisFileDirectory)tests.targets" Condition="'$(IsTestProject)'=='true' and '$(ExcludeTestsImport)'!='true'"/>
   
   <!-- 
     Import the PackageLibs.targets which exposes targets from library projects to report what
@@ -171,7 +245,7 @@
         PackageIncludeDocs - true to include the docs next to this project's ouput.  Default
                              is true for reference assemblies, false for implementation.
    -->
-  <Import Project="$(MSBuildThisFileDirectory)PackageLibs.targets" Condition="'$(ExclduePackageLibsImport)'!='true'"/>
+  <Import Project="$(MSBuildThisFileDirectory)PackageLibs.targets" Condition="'$(ExcludePackageLibsImport)'!='true'"/>
 
   <Target Name="CheckDesignTime">
     <!--
@@ -186,7 +260,13 @@
       <VSDesignTimeBuild Condition="'$(BuildingInsideVisualStudio)'=='true' and '$(BuildingOutOfProcess)'=='false'">true</VSDesignTimeBuild>
     </PropertyGroup>
   </Target>
-  
+
+  <!--
+    import the MicroBuild boot-strapper project (only relevant for shipping binaries)
+    NOTE: we import this at the end as it will override some dummy targets (e.g. SignFiles)
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)MicroBuild.Core.targets" Condition="'$(IsTestProject)'!='true' and '$(SignType)' != 'oss'" />
+
   <!--
     Providing a definition for __BlockReflectionAttribute in an assembly is a signal to the .NET Native toolchain 
     to remove the metadata for all non-public APIs. This both reduces size and disables private reflection on those 
@@ -207,4 +287,6 @@
       <Compile Include="$(BlockReflectionAtributeFile)" />  
     </ItemGroup>
   </Target>
+  
+  <Import Project="$(CustomAfterBuildCommonTargets)" Condition="Exists('$(CustomAfterBuildCommonTargets)')"/>
 </Project>

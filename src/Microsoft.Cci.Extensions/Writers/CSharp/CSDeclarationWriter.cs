@@ -17,6 +17,7 @@ namespace Microsoft.Cci.Writers.CSharp
         private readonly ICciFilter _filter;
         private bool _forCompilation;
         private bool _forCompilationIncludeGlobalprefix;
+        private bool _forCompilationThrowPlatformNotSupported;
         private bool _includeFakeAttributes;
 
         public CSDeclarationWriter(ISyntaxWriter writer)
@@ -36,6 +37,7 @@ namespace Microsoft.Cci.Writers.CSharp
             _filter = filter;
             _forCompilation = forCompilation;
             _forCompilationIncludeGlobalprefix = false;
+            _forCompilationThrowPlatformNotSupported = false;
             _includeFakeAttributes = false;
         }
 
@@ -55,6 +57,11 @@ namespace Microsoft.Cci.Writers.CSharp
         {
             get { return _forCompilationIncludeGlobalprefix; }
             set { _forCompilationIncludeGlobalprefix = value; }
+        }
+        public bool ForCompilationThrowPlatformNotSupported
+        {
+            get { return _forCompilationThrowPlatformNotSupported; }
+            set { _forCompilationThrowPlatformNotSupported = value; }
         }
 
         public ISyntaxWriter SyntaxtWriter { get { return _writer; } }
@@ -197,7 +204,7 @@ namespace Microsoft.Cci.Writers.CSharp
             _writer.Write(literal);
         }
 
-        private void WriteTypeName(ITypeReference type, bool noSpace = false, bool isDynamic = false)
+        private void WriteTypeName(ITypeReference type, bool noSpace = false, bool isDynamic = false, bool useTypeKeywords = true)
         {
             if (isDynamic)
             {
@@ -205,7 +212,10 @@ namespace Microsoft.Cci.Writers.CSharp
                 return;
             }
 
-            NameFormattingOptions namingOptions = NameFormattingOptions.TypeParameters | NameFormattingOptions.UseTypeKeywords;
+            NameFormattingOptions namingOptions = NameFormattingOptions.TypeParameters;
+
+            if (useTypeKeywords)
+                namingOptions |= NameFormattingOptions.UseTypeKeywords;
 
             if (_forCompilationIncludeGlobalprefix)
                 namingOptions |= NameFormattingOptions.UseGlobalPrefix;

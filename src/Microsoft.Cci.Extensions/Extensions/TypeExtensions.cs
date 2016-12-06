@@ -258,6 +258,15 @@ namespace Microsoft.Cci.Extensions
             throw new NotImplementedException("Called .Name on a currently unsupported type definition!");
         }
 
+        public static string FullName(this ICustomAttribute attribute)
+        {
+            FakeCustomAttribute fca = attribute as FakeCustomAttribute;
+            if (fca != null)
+                return fca.FullTypeName;
+
+            return attribute.Type.FullName();
+        }
+
         public static string FullName(this IReference reference)
         {
             Contract.Requires(reference != null);
@@ -620,6 +629,34 @@ namespace Microsoft.Cci.Extensions
             }
 
             return true;
+        }
+
+        public static bool IsObsoleteWithUsageTreatedAsCompilationError(this ICustomAttribute attribute)
+        {
+            if (attribute.Type.FullName() != typeof(ObsoleteAttribute).FullName)
+            {
+                return false;
+            }
+
+            if (attribute.Arguments == null || attribute.Arguments.Count() != 2)
+            {
+                return false;
+            }
+
+            IMetadataConstant messageArgument = attribute.Arguments.ElementAt(0) as IMetadataConstant;
+            IMetadataConstant errorArgument = attribute.Arguments.ElementAt(1) as IMetadataConstant;
+
+            if (messageArgument == null || errorArgument == null)
+            {
+                return false;
+            }
+
+            if (!(messageArgument.Value is string && errorArgument.Value is bool))
+            {
+                return false;
+            }
+
+            return (bool)errorArgument.Value;
         }
     }
 }

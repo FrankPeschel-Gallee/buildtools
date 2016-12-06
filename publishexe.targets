@@ -37,6 +37,10 @@
   <Target Name="FixUpCoreConsoleNames">
     <Move SourceFiles="$(Outdir)$(AssemblyName).exe" DestinationFiles="$(Outdir)$(AssemblyName).dll" />
     <Move SourceFiles="$(Outdir)CoreConsole.exe" DestinationFiles="$(Outdir)$(AssemblyName).exe" />
+    <!-- update TargetPath with the renamed file -->
+    <PropertyGroup>
+      <TargetPath>$(Outdir)$(AssemblyName).dll</TargetPath>
+    </PropertyGroup>
   </Target>
 
 </Project>

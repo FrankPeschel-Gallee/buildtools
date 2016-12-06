@@ -46,6 +46,12 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
                 SortedSet<Framework> frameworkVersions = null;
                 string fxId = framework.FrameworkName.Identifier;
 
+                if (fxId == FrameworkConstants.FrameworkIdentifiers.Portable)
+                {
+                    // portable doesn't have version relationships, use the entire TFM
+                    fxId = framework.FrameworkName.ToString();
+                }
+
                 if (!result.Frameworks.TryGetValue(fxId, out frameworkVersions))
                 {
                     frameworkVersions = new SortedSet<Framework>();
@@ -91,8 +97,45 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         public Dictionary<string, SortedSet<Framework>> Frameworks { get; private set; }
 
         public Dictionary<string, Version> LastNonSemanticVersions { get; private set; }
-    }
+        
+        /// <summary>
+        /// Determines the significant API version given an assembly version.
+        /// </summary>
+        /// <param name="assemblyName">Name of assembly</param>
+        /// <param name="assemblyVersion">Version of assembly</param>
+        /// <returns>Lowest version with the same API surface as assemblyVersion</returns>
+        public Version GetApiVersion(string assemblyName, Version assemblyVersion)
+        {
+            if (assemblyVersion == null)
+            {
+                return null;
+            }
 
+            if (assemblyVersion.Build == 0 && assemblyVersion.Revision == 0)
+            {
+                // fast path for X.Y.0.0
+                return assemblyVersion;
+            }
+
+            Version latestLegacyVersion = null;
+            LastNonSemanticVersions.TryGetValue(assemblyName, out latestLegacyVersion);
+
+            if (latestLegacyVersion == null)
+            {
+                return new Version(assemblyVersion.Major, assemblyVersion.Minor, 0, 0);
+            }
+            else if (assemblyVersion.Major <= latestLegacyVersion.Major && assemblyVersion.Minor <= latestLegacyVersion.Minor)
+            {
+                // legacy version round build to nearest 10
+                return new Version(assemblyVersion.Major, assemblyVersion.Minor, assemblyVersion.Build - assemblyVersion.Build % 10, 0);
+            }
+            else
+            {
+                // new version
+                return new Version(assemblyVersion.Major, assemblyVersion.Minor, 0, 0);
+            }
+        }
+    }
 
     public class Framework : IComparable<Framework>
     {
@@ -100,7 +143,7 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
         {
             Assemblies = new Dictionary<string, Version>();
             FrameworkName = new FrameworkName(targetName);
-            var nugetFramework = new NuGetFramework(FrameworkName.Identifier, FrameworkName.Version);
+            var nugetFramework = new NuGetFramework(FrameworkName.Identifier, FrameworkName.Version, FrameworkName.Profile);
             ShortName = nugetFramework.GetShortFolderName();
 
             if (ShortName.EndsWith(nugetFramework.Version.Major.ToString()) && nugetFramework.Version.Minor == 0)
@@ -192,6 +235,19 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
 
         public static bool IsInbox(string frameworkListsPath, string framework, string assemblyName, string assemblyVersion)
         {
+            NuGetFramework fx = NuGetFramework.Parse(framework);
+            return IsInbox(frameworkListsPath, fx, assemblyName, assemblyVersion);
+        }
+
+        public static bool IsInbox(string frameworkListsPath, NuGetFramework framework, string assemblyName, string assemblyVersion)
+        {
+            if (framework.Framework == FrameworkConstants.FrameworkIdentifiers.UAP || 
+                (framework.Framework == FrameworkConstants.FrameworkIdentifiers.NetCore && framework.Version >= FrameworkConstants.CommonFrameworks.NetCore50.Version))
+            {
+                // UAP & netcore50 or higher are completely OOB, despite being compatible with netcore4x which has inbox assemblies
+                return false;
+            }
+
             // if no version is specified just use 0.0.0.0 to evaluate for any version of the contract
             Version version = FrameworkUtilities.Ensure4PartVersion(String.IsNullOrEmpty(assemblyVersion) ? new Version(0, 0, 0, 0) : new Version(assemblyVersion));
             FrameworkSet fxs = GetInboxFrameworks(frameworkListsPath);
@@ -202,18 +258,19 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             foreach (var fxVersions in fxs.Frameworks.Values)
             {
                 // Get the nearest compatible framework from this set of frameworks.
-                var nearest = FrameworkUtilities.GetNearest(NuGetFramework.Parse(framework), fxVersions.Select(fx => NuGetFramework.Parse(fx.ShortName)).ToArray());
+                var nearest = FrameworkUtilities.GetNearest(framework, fxVersions.Select(fx => NuGetFramework.Parse(fx.ShortName)).ToArray());
                 // If there are not compatible frameworks in the current framework set, there is not going to be a match.
                 if (nearest == null)
                 {
                     continue;
                 }
-                var origFramework = NuGetFramework.Parse(framework);
-                // if the nearest compatible frameworks version is greater than the version of the framework we are looking for, this is not going to be a match.
-                if (nearest.Version > origFramework.Version)
+                
+                // don't allow PCL to specify inbox for non-PCL framework.
+                if (nearest.IsPCL != framework.IsPCL)
                 {
                     continue;
                 }
+                
                 // find the first version (if any) that supports this contract
                 foreach (var fxVersion in fxVersions)
                 {

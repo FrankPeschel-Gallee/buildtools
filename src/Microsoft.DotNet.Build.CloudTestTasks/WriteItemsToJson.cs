@@ -3,11 +3,13 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
+using System.Text;
+using System.Threading;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.DotNet.Build.CloudTestTasks
 {
@@ -38,7 +40,8 @@ namespace Microsoft.DotNet.Build.CloudTestTasks
                 Directory.CreateDirectory(Path.GetDirectoryName(JsonFileName));
 
             JsonSerializer jsonSerializer = new JsonSerializer();
-            using (StreamWriter streamWriter = new StreamWriter(JsonFileName))
+            using (FileStream fs = File.Create(JsonFileName))
+            using (StreamWriter streamWriter = new StreamWriter(fs))
             {
                 using (JsonTextWriter jsonWriter = new JsonTextWriter(streamWriter))
                 {
@@ -54,7 +57,7 @@ namespace Microsoft.DotNet.Build.CloudTestTasks
                         foreach (var key in customMd.Keys)
                         {
                             var mdString = key.ToString();
-                            var mdValue = customMd[key].ToString();
+                            var mdValue = customMd[key].ToString().Trim();
 
                             jsonWriter.WritePropertyName(mdString);
 
@@ -73,7 +76,25 @@ namespace Microsoft.DotNet.Build.CloudTestTasks
                             }
                             else
                             {
-                                jsonWriter.WriteValue(mdValue);
+                                if (mdValue.StartsWith("{") && mdValue.EndsWith("}"))
+                                {
+                                    // If it's a JObject, parse it and use that to write...
+                                    try
+                                    {
+                                        JObject jsonEntry = JObject.Parse(mdValue);
+                                        jsonEntry.WriteTo(jsonWriter);
+                                    }
+                                    // Leave it in... it's probably bad by here but writing it aids debugging.
+                                    catch
+                                    {
+                                        jsonWriter.WriteValue(mdValue);
+                                    }
+                                }
+                                // Plain value
+                                else
+                                {
+                                    jsonWriter.WriteValue(mdValue);
+                                }
                             }
                         }
 
